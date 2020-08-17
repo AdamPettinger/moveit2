@@ -400,6 +400,20 @@ void ServoCalcs::run()
     resetLowPassFilters(original_joint_state_);
 }
 
+
+void clampMaxAbs(Eigen::VectorXd& input, const double& max)
+{
+  double abs_max = 0;
+  for (size_t i=0;i<input.size(); ++i)
+  {
+    if (fabs(input(i)) > abs_max)
+      abs_max = fabs(input(i));
+  }
+
+  if (abs_max > max)
+    input *= max/abs_max;
+}
+
 // Perform the servoing calculations
 bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
                                      trajectory_msgs::msg::JointTrajectory& joint_trajectory)
@@ -450,15 +464,70 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
   // Convert from cartesian commands to joint commands
   Eigen::MatrixXd jacobian = kinematic_state_->getJacobian(joint_model_group_);
 
-  removeDriftDimensions(jacobian, delta_x);
-
   Eigen::JacobiSVD<Eigen::MatrixXd> svd =
       Eigen::JacobiSVD<Eigen::MatrixXd>(jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
   Eigen::MatrixXd matrix_s = svd.singularValues().asDiagonal();
-  Eigen::MatrixXd pseudo_inverse = svd.matrixV() * matrix_s.inverse() * svd.matrixU().transpose();
 
-  delta_theta_ = pseudo_inverse * delta_x;
-  delta_theta_ *= velocityScalingFactorForSingularity(delta_x, svd, pseudo_inverse);
+  bool use_dls = true;
+
+  double ini_condition = svd.singularValues()(0) / svd.singularValues()(svd.singularValues().size() - 1);
+
+  if (!use_dls || ini_condition < parameters_->hard_stop_singularity_threshold)
+  // if (!use_dls)
+  {
+    removeDriftDimensions(jacobian, delta_x);
+
+    Eigen::MatrixXd pseudo_inverse = svd.matrixV() * matrix_s.inverse() * svd.matrixU().transpose();
+    // Eigen::MatrixXd pseudo_inverse = jacobian.transpose() * (jacobian * jacobian.transpose()).inverse();
+
+    delta_theta_ = pseudo_inverse * delta_x;
+    // delta_theta_ *= velocityScalingFactorForSingularity(delta_x, svd, pseudo_inverse);
+    RCLCPP_WARN_STREAM(LOGGER, "Normal");
+  }
+  else
+  {
+    double lambda = 0.1;
+    Eigen::MatrixXd dls_inverse = jacobian.transpose() * (jacobian * jacobian.transpose() + pow(lambda, 2)*Eigen::MatrixXd::Identity(6,6)).inverse();
+
+    delta_theta_ = dls_inverse * delta_x;
+    RCLCPP_WARN_STREAM(LOGGER, "DLS");
+
+    // double gamma_max = 0.2 * parameters_->publish_period;
+
+    // Eigen::VectorXd rho(num_joints_);
+    // rho.setZero();
+
+    // size_t i_itr = svd.singularValues().size() - 1;
+    // for (size_t i=0; i<i_itr; ++i)
+    // {
+    //   double N_i = svd.matrixU().col(i).norm();
+
+    //   double M_i = 0;
+
+    //   for (size_t j=0; j < num_joints_; ++j)
+    //   {
+    //     double p_j = jacobian.col(j).norm();
+    //     M_i += svd.matrixU()(j,i) * p_j;
+    //   }
+    //   M_i *= svd.singularValues()(i);
+
+    //   double gamma_i = std::min(1.0, N_i/M_i) * gamma_max;
+
+
+    //   if (svd.singularValues()(i) != 0)
+    //   {
+    //     double dot_prod = svd.matrixU().col(i).dot(delta_x);
+    //     double sigma = svd.singularValues()(i);
+    //     Eigen::VectorXd test = (dot_prod/sigma)*svd.matrixV().col(i);
+    //     clampMaxAbs(test, gamma_i);
+    //     rho += test;
+    //   }
+    // }
+
+    // clampMaxAbs(rho, gamma_max);
+    // delta_theta_ = rho;
+  }
+
 
   return internalServoUpdate(delta_theta_, joint_trajectory);
 }
@@ -484,7 +553,7 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
   internal_joint_state_ = original_joint_state_;
 
   // Enforce SRDF Velocity, Acceleration limits
-  enforceSRDFAccelVelLimits(delta_theta);
+  // enforceSRDFAccelVelLimits(delta_theta);
 
   // Apply collision scaling
   double collision_scale = collision_velocity_scale_;
