@@ -472,25 +472,55 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
 
   double ini_condition = svd.singularValues()(0) / svd.singularValues()(svd.singularValues().size() - 1);
 
-  if (!use_dls || ini_condition < parameters_->hard_stop_singularity_threshold)
+  removeDriftDimensions(jacobian, delta_x);
+  Eigen::MatrixXd pseudo_inverse = svd.matrixV() * matrix_s.inverse() * svd.matrixU().transpose();
+  // Eigen::MatrixXd pseudo_inverse = jacobian.transpose() * (jacobian * jacobian.transpose()).inverse();
+  double improving = velocityScalingFactorForSingularity(delta_x, svd, pseudo_inverse);
+
+  if (!use_dls || ini_condition < parameters_->hard_stop_singularity_threshold || improving <= 0)
   // if (!use_dls)
   {
-    removeDriftDimensions(jacobian, delta_x);
 
-    Eigen::MatrixXd pseudo_inverse = svd.matrixV() * matrix_s.inverse() * svd.matrixU().transpose();
-    // Eigen::MatrixXd pseudo_inverse = jacobian.transpose() * (jacobian * jacobian.transpose()).inverse();
+    if (using_dls_)
+    {
+      using_dls_ = false;
+      RCLCPP_INFO_STREAM(LOGGER, "Total deviation was:\n" << dls_deviation_);
+      RCLCPP_WARN_STREAM(LOGGER, "Starting Normal");
+    }
+
+
 
     delta_theta_ = pseudo_inverse * delta_x;
     // delta_theta_ *= velocityScalingFactorForSingularity(delta_x, svd, pseudo_inverse);
-    RCLCPP_WARN_STREAM(LOGGER, "Normal");
   }
   else
   {
-    double lambda = 0.1;
+    if (!using_dls_)
+    {
+      using_dls_ = true;
+      dls_deviation_ = Eigen::VectorXd(6);
+      dls_deviation_.setZero();
+      RCLCPP_WARN_STREAM(LOGGER, "Starting DLS");
+    }
+
+    // double lambda = 0.1;
+    double upper_lambda = 0.1;
+    double upper_cond = 2*parameters_->hard_stop_singularity_threshold;
+    double lower_lambda = 0;
+    double lower_cond = parameters_->hard_stop_singularity_threshold;
+    
+    double lambda = ((ini_condition-lower_cond)/(upper_cond-lower_cond))*(upper_lambda-lower_lambda) + lower_lambda;
+    lambda = std::min(lambda, upper_lambda);
     Eigen::MatrixXd dls_inverse = jacobian.transpose() * (jacobian * jacobian.transpose() + pow(lambda, 2)*Eigen::MatrixXd::Identity(6,6)).inverse();
 
     delta_theta_ = dls_inverse * delta_x;
-    RCLCPP_WARN_STREAM(LOGGER, "DLS");
+
+    Eigen::VectorXd temp(num_joints_);
+    for (size_t i=0; i<delta_theta_.size(); ++i)
+    {
+      temp(i) = delta_theta_(i);
+    }
+    dls_deviation_ += jacobian * temp;
 
     // double gamma_max = 0.2 * parameters_->publish_period;
 
@@ -723,32 +753,34 @@ double ServoCalcs::velocityScalingFactorForSingularity(const Eigen::VectorXd& co
 
   // If this dot product is positive, we're moving toward singularity ==> decelerate
   double dot = vector_toward_singularity.dot(commanded_velocity);
-  if (dot > 0)
-  {
-    // Ramp velocity down linearly when the Jacobian condition is between lower_singularity_threshold and
-    // hard_stop_singularity_threshold, and we're moving towards the singularity
-    if ((ini_condition > parameters_->lower_singularity_threshold) &&
-        (ini_condition < parameters_->hard_stop_singularity_threshold))
-    {
-      velocity_scale = 1. -
-                       (ini_condition - parameters_->lower_singularity_threshold) /
-                           (parameters_->hard_stop_singularity_threshold - parameters_->lower_singularity_threshold);
-      status_ = StatusCode::DECELERATE_FOR_SINGULARITY;
-      rclcpp::Clock& clock = *node_->get_clock();
-      RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, SERVO_STATUS_CODE_MAP.at(status_));
-    }
+  return dot; // If positive, we are getting MORE singular
+  // if (dot > 0)
+  // {
+  //   // Ramp velocity down linearly when the Jacobian condition is between lower_singularity_threshold and
+  //   // hard_stop_singularity_threshold, and we're moving towards the singularity
+  //   if ((ini_condition > parameters_->lower_singularity_threshold) &&
+  //       (ini_condition < parameters_->hard_stop_singularity_threshold))
+  //   {
+  //     velocity_scale = 1. - (ini_condition - parameters_->lower_singularity_threshold) /
+  //                               (parameters_->hard_stop_singularity_threshold - parameters_->lower_singularity_threshold);
+  //     status_ = StatusCode::DECELERATE_FOR_SINGULARITY;
+  //     auto& clock = *node_->get_clock();
+  //     RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+  //                                 SERVO_STATUS_CODE_MAP.at(status_));
+  //   }
 
-    // Very close to singularity, so halt.
-    else if (ini_condition > parameters_->hard_stop_singularity_threshold)
-    {
-      velocity_scale = 0;
-      status_ = StatusCode::HALT_FOR_SINGULARITY;
-      rclcpp::Clock& clock = *node_->get_clock();
-      RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, SERVO_STATUS_CODE_MAP.at(status_));
-    }
-  }
+  //   // Very close to singularity, so halt.
+  //   else if (ini_condition > parameters_->hard_stop_singularity_threshold)
+  //   {
+  //     velocity_scale = 0;
+  //     status_ = StatusCode::HALT_FOR_SINGULARITY;
+  //     auto& clock = *node_->get_clock();
+  //     RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+  //                                 SERVO_STATUS_CODE_MAP.at(status_));
+  //   }
+  // }
 
-  return velocity_scale;
+  // return velocity_scale;
 }
 
 void ServoCalcs::enforceSRDFAccelVelLimits(Eigen::ArrayXd& delta_theta)

@@ -327,5 +327,8 @@ protected:
   rclcpp::Time latest_joint_command_stamp_ = rclcpp::Time(0., RCL_ROS_TIME);
   bool latest_nonzero_twist_stamped_ = false;
   bool latest_nonzero_joint_cmd_ = false;
+
+  bool using_dls_ = false;
+  Eigen::VectorXd dls_deviation_;
 };
 }  // namespace moveit_servo
