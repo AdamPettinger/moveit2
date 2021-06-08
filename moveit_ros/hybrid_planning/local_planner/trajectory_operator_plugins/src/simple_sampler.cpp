@@ -65,8 +65,13 @@ bool SimpleSampler::addTrajectorySegment(const robot_trajectory::RobotTrajectory
   // Throw away old reference trajectory and use trajectory update
   reference_trajectory_ = std::make_shared<robot_trajectory::RobotTrajectory>(new_trajectory);
 
+  RCLCPP_INFO_STREAM(LOGGER, "\n\n\n\n\n\n\n\n\nNew Traj size:\n" << reference_trajectory_->getWayPointCount());
+  RCLCPP_INFO_STREAM(LOGGER, "Time after:\n" << reference_trajectory_->getWayPointDurationFromStart(15));
+  RCLCPP_INFO_STREAM(LOGGER, "Time total:\n" << reference_trajectory_->getDuration());
+
   // Parametrize trajectory and calculate velocity and accelerations
   time_parametrization_.computeTimeStamps(*reference_trajectory_);
+  RCLCPP_INFO_STREAM(LOGGER, "Time after:\n" << reference_trajectory_->getWayPointDurationFromStart(15));
   return true;
 }
 
@@ -99,8 +104,11 @@ robot_trajectory::RobotTrajectory SimpleSampler::getLocalTrajectory(const moveit
     }
 
     // Construct local trajectory containing the next three global trajectory waypoints
-    local_trajectory.addSuffixWayPoint(reference_trajectory_->getWayPoint(next_waypoint_index_),
-                                       reference_trajectory_->getWayPointDurationFromPrevious(next_waypoint_index_));
+    for (size_t i = next_waypoint_index_; i < reference_trajectory_->getWayPointCount(); ++i)
+    {
+      local_trajectory.addSuffixWayPoint(reference_trajectory_->getWayPoint(i),
+                                         reference_trajectory_->getWayPointDurationFromPrevious(i));
+    }
   }
   return local_trajectory;
 }

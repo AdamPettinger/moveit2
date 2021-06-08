@@ -72,6 +72,8 @@ private:
 
   // Inteface to communicate with servo
   rclcpp::Publisher<control_msgs::msg::JointJog>::SharedPtr joint_cmd_pub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_cmd_pub_;
+  bool publish_ = true;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr collision_velocity_scale_sub_;
 
   // Flag to indicate if replanning is necessary

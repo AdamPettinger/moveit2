@@ -59,6 +59,9 @@ bool ServoSolver::initialize(const rclcpp::Node::SharedPtr& node,
   feedback_send_ = false;
   joint_cmd_pub_ = node_handle_->create_publisher<control_msgs::msg::JointJog>("servo_demo_node/delta_joint_cmds", 10);
 
+  traj_cmd_pub_ = node_handle_->create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      "/panda_arm_controller/joint_trajectory", 10);
+
   // Get Servo Parameters
   auto servo_parameters = moveit_servo::ServoParameters::makeServoParameters(node_handle_, LOGGER);
   if (!servo_parameters)
@@ -110,12 +113,24 @@ ServoSolver::solve(const robot_trajectory::RobotTrajectory& local_trajectory,
   moveit_msgs::msg::RobotTrajectory robot_command;
   local_trajectory.getRobotTrajectoryMsg(robot_command);
 
+  if (publish_ || replan_)
+  {
+    traj_cmd_pub_->publish(robot_command.joint_trajectory);
+    publish_ = false;
+  }
+
   // Replan if velocity scaling is below threshold
   if (replan_)
   {
     if (!feedback_send_)
     {
       feedback_result.feedback = "collision_ahead";
+      auto msg = std::make_unique<control_msgs::msg::JointJog>();
+      msg->header.stamp = node_handle_->now();
+      msg->joint_names = robot_command.joint_trajectory.joint_names;
+      msg->velocities.assign(robot_command.joint_trajectory.joint_names.size(), 0);
+      joint_cmd_pub_->publish(std::move(msg));
+      publish_ = true;
     }
     feedback_send_ = true;  // Give the architecture time to handle feedback
   }
@@ -124,11 +139,6 @@ ServoSolver::solve(const robot_trajectory::RobotTrajectory& local_trajectory,
     feedback_send_ = false;
   }
 
-  auto msg = std::make_unique<control_msgs::msg::JointJog>();
-  msg->header.stamp = node_handle_->now();
-  msg->joint_names = robot_command.joint_trajectory.joint_names;
-  msg->velocities = robot_command.joint_trajectory.points[0].velocities;
-  joint_cmd_pub_->publish(std::move(msg));
   return feedback_result;
 }
 }  // namespace moveit_hybrid_planning
