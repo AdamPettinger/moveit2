@@ -157,6 +157,8 @@ ServoCalcs::ServoCalcs(rclcpp::Node::SharedPtr node,
   internal_joint_state_.position.resize(num_joints_);
   internal_joint_state_.velocity.resize(num_joints_);
 
+  target_joint_state_ = internal_joint_state_;
+
   for (std::size_t i = 0; i < num_joints_; ++i)
   {
     // A map for the indices of incoming joint commands
@@ -360,6 +362,7 @@ void ServoCalcs::calculateSingleIteration()
     if (!cartesianServoCalcs(twist_stamped_cmd_, *joint_trajectory))
     {
       resetLowPassFilters(original_joint_state_);
+      reset_target_state_ = true;
       return;
     }
   }
@@ -368,11 +371,13 @@ void ServoCalcs::calculateSingleIteration()
     if (!jointServoCalcs(joint_servo_cmd_, *joint_trajectory))
     {
       resetLowPassFilters(original_joint_state_);
+      reset_target_state_ = true;
       return;
     }
   }
   else
   {
+    reset_target_state_ = true;
     // Joint trajectory is not populated with anything, so set it to the last positions and 0 velocity
     *joint_trajectory = *last_sent_command_;
     for (auto& point : joint_trajectory->points)
@@ -552,6 +557,24 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
   // Set internal joint state from original
   internal_joint_state_ = original_joint_state_;
 
+  // Check if the target state has deviated significantly from the current position
+  if (reset_target_state_)
+  {
+    target_joint_state_ = original_joint_state_;
+    reset_target_state_ = false;
+  }
+  else
+  {
+    for (size_t i = 0; i < original_joint_state_.position.size(); ++i)
+    {
+      if (fabs(original_joint_state_.position.at(i) - target_joint_state_.position.at(i)) > 0.05)
+      {
+        target_joint_state_ = original_joint_state_;
+        break;
+      }
+    }
+  }
+
   // Enforce SRDF Velocity, Acceleration limits
   enforceVelLimits(delta_theta);
 
@@ -572,22 +595,22 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
   delta_theta *= collision_scale;
 
   // Loop thru joints and update them, calculate velocities, and filter
-  if (!applyJointUpdate(delta_theta, internal_joint_state_, prev_joint_velocity_))
+  if (!applyJointUpdate(delta_theta, target_joint_state_, prev_joint_velocity_))
     return false;
 
   // Mark the lowpass filters as updated for this cycle
   updated_filters_ = true;
 
   // Enforce SRDF position limits, might halt if needed, set prev_vel to 0
-  if (!enforcePositionLimits(internal_joint_state_))
+  if (!enforcePositionLimits(target_joint_state_))
   {
-    suddenHalt(internal_joint_state_);
+    suddenHalt(target_joint_state_);
     status_ = StatusCode::JOINT_BOUND;
     prev_joint_velocity_.setZero();
   }
 
   // compose outgoing message
-  composeJointTrajMessage(internal_joint_state_, joint_trajectory);
+  composeJointTrajMessage(target_joint_state_, joint_trajectory);
 
   // Modify the output message if we are using gazebo
   if (parameters_->use_gazebo)
